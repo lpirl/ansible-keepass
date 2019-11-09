@@ -148,6 +148,11 @@ class KeepassXC(KeepassBase):
             return
         except Exception as e:
             raise KeepassXCError('Error obtaining host name {}: {}'.format(host_name, e))
+        if len(logins) > 1:
+            raise KeepassXCError(
+                'Error obtaining host name {}: '.format(host_name) +
+                'multiple values returned'
+            )
         return next(iter(logins), {}).get('password')
 
 
