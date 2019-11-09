@@ -140,7 +140,10 @@ class KeepassXC(KeepassBase):
 
     def get_password(self, host_name):
         try:
-            logins = self.connection.get_logins(self.identity, url='ssh:{}'.format(host_name))
+            logins = self.connection.get_logins(
+                self.identity,
+                url='ssh://{}'.format(host_name)
+            )
         except ProtocolError:
             return
         except Exception as e:
