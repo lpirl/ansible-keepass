@@ -1,4 +1,5 @@
 import os
+from functools import lru_cache
 
 import psutil
 
@@ -50,21 +51,8 @@ class KeepassXCError(AnsibleKeepassError):
 
 
 class KeepassBase(object):
-    def __init__(self):
-        self.cached_passwords = {}
-
-    def get_cached_password(self, host):
-        hosts = get_host_names(host)
-        for host_name in hosts:
-            return self._get_cached_password(host_name)
-
-    def _get_cached_password(self, host_name):
-        password = self.cached_passwords.get(host_name, NONE)
-        if password is NONE:
-            password = self.get_password(host_name)
-            self.cached_passwords[host_name] = password
-        return password
-
+    # decoration with ``@lru_cache(maxsize=None)`` on subclass
+    # implementation is probably a good idea
     def get_password(self, host):
         raise NotImplementedError
 
@@ -74,6 +62,7 @@ class KeepassHTTP(KeepassBase):
         super(KeepassHTTP, self).__init__()
         self.k = keepasshttplib.Keepasshttplib()
 
+    @lru_cache(maxsize=None)
     def get_password(self, host_name):
         if not self.test_connection():
             raise KeepassHTTPError('Keepass is closed!')
@@ -138,6 +127,7 @@ class KeepassXC(KeepassBase):
                 raise AnsibleKeepassError('Error on connection: {}'.format(e))
         return self._connection
 
+    @lru_cache(maxsize=None)
     def get_password(self, host_name):
         try:
             logins = self.connection.get_logins(
@@ -185,7 +175,7 @@ class TaskExecutor(_TaskExecutor):
             cls = get_keepass_class()
             try:
                 kp = get_or_create_conn(cls)
-                password = kp.get_cached_password(host)
+                password = kp.get_password(host)
             except AnsibleKeepassError as e:
                 display.error(e)
             if password is None:
