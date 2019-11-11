@@ -42,8 +42,8 @@ class KeepassXCError(AnsibleKeepassError):
     body = 'The password for root could not be obtained using KeepassXC Browser.'
 
 
-class KeepassBase(object):
-    def get_password(self, host):
+class KeepassBase:
+    def get_password(self, host_name):
         raise NotImplementedError
 
 
@@ -63,6 +63,7 @@ class KeepassHTTP(KeepassBase):
             )
         if auth:
             return auth[1]
+        return None
 
     def test_connection(self):
         key = self.k.get_key_from_keyring()
@@ -97,15 +98,15 @@ class KeepassXC(KeepassBase):
         return identity
 
     def get_connection(self, identity):
-        c = Connection()
-        c.connect()
-        c.change_public_keys(identity)
-        c.get_database_hash(identity)
+        connection = Connection()
+        connection.connect()
+        connection.change_public_keys(identity)
+        connection.get_database_hash(identity)
 
-        if not c.test_associate(identity):
-            c.associate(identity)
+        if not connection.test_associate(identity):
+            connection.associate(identity)
 
-            if not c.test_associate(identity):
+            if not connection.test_associate(identity):
                 raise KeepassXCError(
                     'Association with KeePassXC failed.'
                 )
@@ -113,7 +114,7 @@ class KeepassXC(KeepassBase):
             data = identity.serialize()
             keyring.set_password(KEEPASSXC_CLIENT_ID, KEYRING_KEY, data)
 
-        return c
+        return connection
 
     @property
     def connection(self):
