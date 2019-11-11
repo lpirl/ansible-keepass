@@ -200,12 +200,6 @@ class VarsModule(BaseVarsPlugin):
     Loads variables for groups and/or hosts
     """
 
-    def get_vars(self, loader, path, entities):
-        super(VarsModule, self).get_vars(loader, path, entities)
-        return {}
-
-    def get_host_vars(self, *args, **kwargs):
-        return {}
-
-    def get_group_vars(self, *args, **kwargs):
+    def get_vars(self, *args, **kwargs):
+        super(VarsModule, self).get_vars(*args, **kwargs)
         return {}
