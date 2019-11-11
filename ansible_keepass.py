@@ -23,10 +23,6 @@ KEYRING_KEY = 'assoc'
 display = Display()
 
 
-class NONE:
-    pass
-
-
 class AnsibleKeepassError(Exception):
     body = 'Error in the Ansible Keepass plugin.'
 
@@ -59,11 +55,10 @@ class KeepassBase(object):
             return self._get_cached_password(host_name)
 
     def _get_cached_password(self, host_name):
-        password = self.cached_passwords.get(host_name, NONE)
-        if password is NONE:
-            password = self.get_password(host_name)
-            self.cached_passwords[host_name] = password
-        return password
+        if host_name not in self.cached_passwords:
+            self.cached_passwords[host_name] = \
+                self.get_password(host_name)
+        return self.cached_passwords[host_name]
 
     def get_password(self, host):
         raise NotImplementedError
@@ -173,19 +168,19 @@ class TaskExecutor(_TaskExecutor):
     def __init__(self, host, task, job_vars, play_context, new_stdin, loader, shared_loader_obj, final_q):
         become = task.become or play_context.become
         if become and not job_vars.get('ansible_become_pass'):
-            password = NONE
             cls = get_keepass_class()
             try:
                 kp = get_or_create_conn(cls)
                 password = kp.get_cached_password(host)
             except AnsibleKeepassError as e:
                 display.error(e)
-            if password is None:
-                display.warning('The password could not be obtained using {}. Hosts tried: {}. Maybe the password is '
-                                'not in the database or does not have the url.'.format(
-                    cls.__name__, ', '.join(get_host_names(host))))
-            elif password not in [None, NONE]:
-                job_vars['ansible_become_pass'] = password
+            else:
+                if password is None:
+                    display.warning('The password could not be obtained using {}. Hosts tried: {}. Maybe the password is '
+                                    'not in the database or does not have the url.'.format(
+                        cls.__name__, ', '.join(get_host_names(host))))
+                else:
+                    job_vars['ansible_become_pass'] = password
         super(TaskExecutor, self).__init__(host, task, job_vars, play_context, new_stdin, loader,
                                            shared_loader_obj, final_q)
 
