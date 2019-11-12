@@ -1,5 +1,4 @@
 import os
-from functools import lru_cache
 
 import psutil
 
@@ -55,7 +54,6 @@ class KeepassHTTP(KeepassBase):
         super(KeepassHTTP, self).__init__()
         self.k = keepasshttplib.Keepasshttplib()
 
-    @lru_cache(maxsize=None)
     def get_password(self, host_name):
         if not self.test_connection():
             raise KeepassHTTPError('Keepass is closed!')
@@ -135,7 +133,6 @@ class KeepassXC(KeepassBase):
                 )
         return self._connection
 
-    @lru_cache(maxsize=None)
     def get_password(self, host_name):
         try:
             logins = self.connection.get_logins(
