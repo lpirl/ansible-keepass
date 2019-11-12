@@ -3,14 +3,11 @@ from functools import lru_cache
 
 import psutil
 
-import __main__
 import requests
 import keyring
 from ansible.plugins.vars import BaseVarsPlugin
-from ansible.executor.task_executor import TaskExecutor as _TaskExecutor
-from ansible.executor import task_executor
-from ansible.executor.process import worker
 from ansible.utils.display import Display
+from ansible.utils.vars import combine_vars
 from keepasshttplib import keepasshttplib, encrypter
 from keepassxc_browser import Identity, Connection
 from keepassxc_browser.protocol import ProtocolError
@@ -22,10 +19,6 @@ KEYRING_KEY = 'assoc'
 
 
 display = Display()
-
-
-class NONE:
-    pass
 
 
 class AnsibleKeepassError(Exception):
@@ -43,17 +36,17 @@ class KeepassConnectionError(AnsibleKeepassError):
 
 
 class KeepassHTTPError(AnsibleKeepassError):
-    body = 'The password for root could not be obtained using Keepass HTTP.'
+    body = ('The password for root could not be obtained using Keepass '
+            'HTTP.')
 
 
 class KeepassXCError(AnsibleKeepassError):
-    body = 'The password for root could not be obtained using KeepassXC Browser.'
+    body = ('The password for root could not be obtained using '
+            'KeepassXC Browser.')
 
 
-class KeepassBase(object):
-    # decoration with ``@lru_cache(maxsize=None)`` on subclass
-    # implementation is probably a good idea
-    def get_password(self, host):
+class KeepassBase:
+    def get_password(self, host_name):
         raise NotImplementedError
 
 
@@ -69,9 +62,12 @@ class KeepassHTTP(KeepassBase):
         try:
             auth = self.k.get_credentials('ssh://{}'.format(host_name))
         except Exception as e:
-            raise KeepassHTTPError('Error obtaining host name {}: {}'.format(host_name, e))
+            raise KeepassHTTPError(
+                'Error obtaining host name {}: {}'.format(host_name, e)
+            )
         if auth:
             return auth[1]
+        return None
 
     def test_connection(self):
         key = self.k.get_key_from_keyring()
@@ -92,7 +88,10 @@ class KeepassXC(KeepassBase):
         try:
             self.identity = self.get_identity()
         except Exception as e:
-            raise KeepassConnectionError('The identity could not be obtained from KeepassXC: {}'.format(e))
+            raise KeepassConnectionError(
+                'The identity could not be obtained from '
+                'KeepassXC: {}'.format(e)
+            )
 
     def get_identity(self):
         data = keyring.get_password(KEEPASSXC_CLIENT_ID, KEYRING_KEY)
@@ -103,18 +102,23 @@ class KeepassXC(KeepassBase):
         return identity
 
     def get_connection(self, identity):
-        c = Connection()
-        c.connect()
-        c.change_public_keys(identity)
-        c.get_database_hash(identity)
+        connection = Connection()
+        connection.connect()
+        connection.change_public_keys(identity)
+        connection.get_database_hash(identity)
 
-        if not c.test_associate(identity):
-            c.associate(identity)
-            assert c.test_associate(identity), "Keepass Association failed"
+        if not connection.test_associate(identity):
+            connection.associate(identity)
+
+            if not connection.test_associate(identity):
+                raise KeepassXCError(
+                    'Association with KeePassXC failed.'
+                )
+
             data = identity.serialize()
             keyring.set_password(KEEPASSXC_CLIENT_ID, KEYRING_KEY, data)
-            del data
-        return c
+
+        return connection
 
     @property
     def connection(self):
@@ -122,9 +126,13 @@ class KeepassXC(KeepassBase):
             try:
                 self._connection = self.get_connection(self.identity)
             except ProtocolError as e:
-                raise AnsibleKeepassError('ProtocolError on connection: {}'.format(e))
+                raise AnsibleKeepassError(
+                    'ProtocolError on connection: {}'.format(e)
+                )
             except Exception as e:
-                raise AnsibleKeepassError('Error on connection: {}'.format(e))
+                raise AnsibleKeepassError(
+                    'Error on connection: {}'.format(e)
+                )
         return self._connection
 
     @lru_cache(maxsize=None)
@@ -134,76 +142,97 @@ class KeepassXC(KeepassBase):
                 self.identity,
                 url='ssh://{}'.format(host_name)
             )
-        except ProtocolError:
-            return
+        except ProtocolError as e:
+            # no logins found
+            if str(e) == "No logins found":
+                return None
+            raise AnsibleKeepassError(
+                'ProtocolError on connection: {}'.format(e)
+            )
         except Exception as e:
-            raise KeepassXCError('Error obtaining host name {}: {}'.format(host_name, e))
+            raise KeepassXCError(
+                'Error obtaining host name {}: {}'.format(host_name, e)
+            )
         if len(logins) > 1:
             raise KeepassXCError(
                 'Error obtaining host name {}: '.format(host_name) +
                 'multiple values returned'
             )
-        return next(iter(logins), {}).get('password')
-
-
-def get_host_names(host):
-    return [host.name] + [group.name for group in host.groups]
-
-
-def get_keepass_class():
-    keepass_class = os.environ.get('KEEPASS_CLASS')
-    if not keepass_class and \
-            next(filter(lambda p: (p.name() or '').lower() in KEEPASSXC_PROCESS_NAMES, psutil.process_iter()), None):
-        keepass_class = 'KeepassXC'
-    return {
-        'KeepassXC': KeepassXC,
-        'KeepassHTTP': KeepassHTTP,
-    }.get(keepass_class, KeepassHTTP)
-
-
-def get_or_create_conn(cls):
-    if not getattr(__main__, '_keepass', None):
-        __main__._keepass = cls()
-    return __main__._keepass
-
-
-class TaskExecutor(_TaskExecutor):
-    def __init__(self, host, task, job_vars, play_context, new_stdin, loader, shared_loader_obj, final_q):
-        become = task.become or play_context.become
-        if become and not job_vars.get('ansible_become_pass'):
-            password = NONE
-            cls = get_keepass_class()
-            try:
-                kp = get_or_create_conn(cls)
-                password = kp.get_password(host)
-            except AnsibleKeepassError as e:
-                display.error(e)
-            if password is None:
-                display.warning('The password could not be obtained using {}. Hosts tried: {}. Maybe the password is '
-                                'not in the database or does not have the url.'.format(
-                    cls.__name__, ', '.join(get_host_names(host))))
-            elif password not in [None, NONE]:
-                job_vars['ansible_become_pass'] = password
-        super(TaskExecutor, self).__init__(host, task, job_vars, play_context, new_stdin, loader,
-                                           shared_loader_obj, final_q)
-
-
-setattr(task_executor, 'TaskExecutor', TaskExecutor)
-setattr(worker, 'TaskExecutor', TaskExecutor)
+        return logins[0]['password']
 
 
 class VarsModule(BaseVarsPlugin):
+    """
+    Loads variables from KeePassXC (either via KeePassHTTP or as
+    browser plugin).
+    """
 
-    """
-    Loads variables for groups and/or hosts
-    """
+    KEEPASS_CLASSES = {
+        'KeepassXC': KeepassXC,
+        'KeepassHTTP': KeepassHTTP,
+    }
+
+    # This class is instantiated per task, so we need a few class
+    # attributes to cache data across executions.
+
+    # We store this as a class attribute in order to keep the
+    # connection to KeePass open (e.g. in case of ``KeepassXC``).
+    keepass = None
+
+    # again, instantiated per task, thus no ``lru_cache`` etc.
+    become_pass_cache = {}
+
+    @classmethod
+    def get_keepass_class(cls):
+
+        class_name = os.environ.get('KEEPASS_CLASS')
+        if class_name is not None:
+            return cls.KEEPASS_CLASSES[class_name]
+
+        for process in psutil.process_iter():
+            process_name = process.name() or ''
+            if process_name.lower() in KEEPASSXC_PROCESS_NAMES:
+                return cls.KEEPASS_CLASSES['KeepassXC']
+
+        return cls.KEEPASS_CLASSES['KeepassHTTP']
+
+    @classmethod
+    def get_keepass(cls):
+        if cls.keepass is None:
+            cls.keepass = cls.get_keepass_class()()
+        return cls.keepass
+
+    @classmethod
+    def get_password(cls, entity):
+        try:
+            keepass = cls.get_keepass()
+            return keepass.get_password(entity.name)
+        except AnsibleKeepassError as e:
+            display.error(e)
+
+        display.warning(
+            'The password could not be obtained for ' +
+            '{}. Either password not in database '.format(entity) +
+            'or URL ssh://{} not set.'.format(entity)
+        )
+
+        return None
 
     def get_vars(self, loader, path, entities):
         super(VarsModule, self).get_vars(loader, path, entities)
-        return {}
+        out_vars = {}
+        cache = self.become_pass_cache
+        for entity in entities:
 
-    def get_host_vars(self, *args, **kwargs):
-        return {}
+            if entity not in cache:
+                cache[entity] = self.get_password(entity)
 
-    def get_group_vars(self, *args, **kwargs):
-        return {}
+            password = cache[entity]
+
+            if password is not None:
+                out_vars = combine_vars(
+                    out_vars,
+                    {'ansible_become_pass': password}
+                )
+
+        return out_vars
