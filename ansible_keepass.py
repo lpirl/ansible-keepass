@@ -35,11 +35,13 @@ class KeepassConnectionError(AnsibleKeepassError):
 
 
 class KeepassHTTPError(AnsibleKeepassError):
-    body = 'The password for root could not be obtained using Keepass HTTP.'
+    body = ('The password for root could not be obtained using Keepass '
+            'HTTP.')
 
 
 class KeepassXCError(AnsibleKeepassError):
-    body = 'The password for root could not be obtained using KeepassXC Browser.'
+    body = ('The password for root could not be obtained using '
+            'KeepassXC Browser.')
 
 
 class KeepassBase:
@@ -85,7 +87,7 @@ class KeepassXC(KeepassBase):
             self.identity = self.get_identity()
         except Exception as e:
             raise KeepassConnectionError(
-                'The identity could not be obtained from ' +
+                'The identity could not be obtained from '
                 'KeepassXC: {}'.format(e)
             )
 
@@ -154,6 +156,7 @@ class KeepassXC(KeepassBase):
                 'multiple values returned'
             )
         return logins[0]['password']
+
 
 class VarsModule(BaseVarsPlugin):
     """
